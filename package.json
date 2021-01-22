@@ -1,0 +1,17 @@
+{
+  "name": "goo-bl",
+  "version": "1.0.0",
+  "description": "Guarantees of Origin on blockchain prototype",
+  "main": "truffle-config.js",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "test": "truffle test"
+  },
+  "author": "Amar Tiric",
+  "license": "ISC",
+  "dependencies": {
+    "@openzeppelin/contracts": "^3.1.0-solc-0.7"
+  }
+}
