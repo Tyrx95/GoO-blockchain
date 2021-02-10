@@ -12,15 +12,17 @@ contract GORegistry is ERC1155Burnable, Ownable {
 
     uint256 public tokenNonce;
 
-    mapping(uint256 => address) public certificateOwners;
+    mapping(uint256 => address) public certificateIssuers;
 
     mapping(uint256 => GOCertificate) public theGOStorage;
     mapping(uint256 => mapping(address => uint256)) public canceledGOs;
 
     mapping(address => bool) public certifiedIssuers;
 
+    mapping(address => address) public userToIssuingBody;
+
     modifier onlyCertificateOwner(uint256 certId) {
-        require(certificateOwners[certId] == msg.sender);
+        require(certificateIssuers[certId] == msg.sender);
         _;
     }
 
@@ -61,6 +63,7 @@ contract GORegistry is ERC1155Burnable, Ownable {
         int256 certificateType;
         address issuingBody;
         bytes data;
+        bytes validationFunction;
     }
 
     //example token metadata domain, not really existing
@@ -70,8 +73,10 @@ contract GORegistry is ERC1155Burnable, Ownable {
         address to,
         int256 _certificateType,
         uint256 amount,
-        bytes calldata data
+        bytes calldata data,
+        bytes calldata validationFunc
     ) external onlyCertifiedIssuers(msg.sender) returns (uint256 _id) {
+        _isValid(msg.sender, validationFunc);
         uint256 tokenId = _generateGOToken(msg.sender, amount, data);
         if (amount > 0) {
             safeTransferFrom(msg.sender, to, tokenId, amount, data);
@@ -79,10 +84,42 @@ contract GORegistry is ERC1155Burnable, Ownable {
         theGOStorage[tokenId] = GOCertificate({
             certificateType: _certificateType,
             issuingBody: msg.sender,
-            data: data
+            data: data,
+            validationFunction: validationFunc
         });
-        emit OneGOIssued(msg.sender, amount,_certificateType, data);
+        emit OneGOIssued(msg.sender, amount, _certificateType, data);
         return tokenId;
+    }
+
+    function _beforeTokenTransfer(
+        address operator,
+        address from,
+        address to,
+        uint256[] memory ids,
+        uint256[] memory amounts,
+        bytes memory data
+    ) internal virtual override {
+        super._beforeTokenTransfer(operator, from, to, ids, amounts, data);
+        if(!_isCertifiedIssuer(from) && from != address(0) && to != address(0)){
+            for(uint256 i = 0; i < ids.length; i++){
+                address fromIB = theGOStorage[ids[0]].issuingBody;
+                address toIB = userToIssuingBody[to];
+                require(fromIB != address(0) , "Sender is not registered within an IB");
+                require(toIB != address(0) , "Receiver is not registered within an IB");
+                require(_doesFromTradeWithTo(fromIB, toIB), 
+                    "From does not trade with to");
+            }
+        }
+        else if(!_isCertifiedIssuer(from) && from != address(0) && to == address(0)){
+            for(uint256 i = 0; i < ids.length; i++){
+                address fromIBToken = theGOStorage[ids[0]].issuingBody;
+                address fromIBCurrent = userToIssuingBody[from];
+                require(fromIBToken != address(0) , "");
+                require(fromIBCurrent != address(0) , "");
+                require(fromIBToken == fromIBCurrent ||_doesFromTradeWithTo(fromIBToken, fromIBCurrent), 
+                    "burn IB check failed");
+            }
+        }
     }
 
     function safeTransferAndCancelGO(
@@ -94,15 +131,14 @@ contract GORegistry is ERC1155Burnable, Ownable {
         bytes calldata cancelData
     ) external {
         GOCertificate memory go = theGOStorage[tokenId];
-
+        _isValid(go.issuingBody, go.validationFunction);
         if (from != to) {
             super.safeTransferFrom(from, to, tokenId, amount, data);
-        }
-        else{
+        } else {
             require(
                 from == _msgSender() || isApprovedForAll(from, _msgSender()),
                 "ERC1155: caller is not owner nor approved"
-            );        
+            );
         }
         super._burn(to, tokenId, amount);
         canceledGOs[tokenId][to] = canceledGOs[tokenId][to].add(amount);
@@ -131,16 +167,17 @@ contract GORegistry is ERC1155Burnable, Ownable {
         );
         if (from != to) {
             super.safeBatchTransferFrom(from, to, tokenIds, tokenAmounts, data);
-        }
-        else{
+        } else {
             require(
                 from == _msgSender() || isApprovedForAll(from, _msgSender()),
                 "ERC1155: caller is not owner nor approved"
-            );        
+            );
         }
         int256[] memory certificateTypes = new int256[](cancelRequests);
         for (uint256 i = 0; i < cancelRequests; i++) {
-            canceledGOs[tokenIds[i]][to] = canceledGOs[tokenIds[i]][to].add(tokenAmounts[i]);
+            canceledGOs[tokenIds[i]][to] = canceledGOs[tokenIds[i]][to].add(
+                tokenAmounts[i]
+            );
             GOCertificate memory go = theGOStorage[tokenIds[i]];
             certificateTypes[i] = go.certificateType;
         }
@@ -174,16 +211,71 @@ contract GORegistry is ERC1155Burnable, Ownable {
         emit IssuingBodyRemoved(issuer);
     }
 
+    //Can only be called by Issuing body address
+    function registerForIssuingBody(address registrant) public onlyCertifiedIssuers(msg.sender){
+        userToIssuingBody[registrant] = msg.sender;
+    }
+
     /////////////    Private  ////////////////
 
     function _generateGOToken(
-        address certificateOwner,
+        address certificateIssuer,
         uint256 initialSupply,
         bytes memory data
     ) private returns (uint256 id) {
         uint256 certificateId = ++tokenNonce;
-        certificateOwners[certificateId] = certificateOwner;
-        super._mint(certificateOwner, certificateId, initialSupply, data);
+        certificateIssuers[certificateId] = certificateIssuer;
+        super._mint(certificateIssuer, certificateId, initialSupply, data);
         return certificateId;
+    }
+
+    function _isValid(address sender, bytes memory validationFunction)
+        internal
+        view
+    {
+        if (_isOfTypeContract(sender)) {
+            (bool success, bytes memory result) =
+                sender.staticcall(validationFunction);
+
+            require(
+                success && abi.decode(result, (bool)),
+                "IB does not validate request"
+            );
+        }
+    }
+
+    function _isOfTypeContract(address theAddress) private view returns (bool) {
+        uint256 size;
+        assembly {
+            size := extcodesize(theAddress)
+        }
+        return size > 0;
+    }
+
+    function _isCertifiedIssuer(address theSender) private view returns (bool){
+        return certifiedIssuers[theSender];
+    }
+
+    function _doesFromTradeWithTo(address from, address to)
+        private
+        view
+        returns (bool)
+    {
+        require(
+            _isOfTypeContract(from),
+            "not address"
+        );
+        require(
+            _isOfTypeContract(to),
+            "not address"
+        );
+        bytes memory validateFunc =
+            abi.encodeWithSignature("isTradingWith(address)", from);
+        (bool success, bytes memory result) = to.staticcall(validateFunc);
+        require(
+            success,
+            "a and b do not trade"
+        );
+        return  abi.decode(result, (bool));
     }
 }
