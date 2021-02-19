@@ -3,5 +3,7 @@ const GOIssuingBody = artifacts.require("GOIssuingBody");
 
 
 module.exports = function (deployer) {
-  deployer.deploy(GORegistry);
+  deployer.deploy(GORegistry).then(function() {
+    return deployer.deploy(GOIssuingBody, GORegistry.address)
+  });
 };
