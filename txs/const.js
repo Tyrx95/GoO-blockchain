@@ -26,9 +26,15 @@ const CANCEL_DATA = {
     consumptionCountry: "Czech",
     beneficiaryType: "Energy supplier"
   }
+
+
+const IB1_ADDRESS = "0xB739F4e8D6DF45aF94F111a17740021E2bED838e";
+const IB2_ADDRESS = "0x560bDdb7AE0683e6AC24E4CfC9E4ec4D67f5A3FE";
   
 
 module.exports = {
     GO_DATA,
-    CANCEL_DATA
+    CANCEL_DATA,
+    IB1_ADDRESS,
+    IB2_ADDRESS
 }
