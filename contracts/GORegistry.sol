@@ -21,7 +21,7 @@ contract GORegistry is ERC1155Burnable, Ownable {
 
     mapping(address => address) public userToIssuingBody;
 
-    modifier onlyCertificateOwner(uint256 certId) {
+    modifier onlyCertificateIssuer(uint256 certId) {
         require(certificateIssuers[certId] == msg.sender);
         _;
     }
@@ -64,9 +64,12 @@ contract GORegistry is ERC1155Burnable, Ownable {
         address issuingBody;
         bytes data;
         bytes validationFunction;
+        bool hasPrivate;
+        bytes32 rootHash;
+        bytes privateData;
+        bool isRevealed;
     }
 
-    //example token metadata domain, not really existing
     constructor() ERC1155("GOCertificateDomain/{id}") Ownable() {}
 
     function issueGOCertificate(
@@ -74,7 +77,9 @@ contract GORegistry is ERC1155Burnable, Ownable {
         int256 _certificateType,
         uint256 amount,
         bytes calldata data,
-        bytes calldata validationFunc
+        bytes calldata validationFunc,
+        bool _hasPrivate,
+        bytes32 _rootHash
     ) external onlyCertifiedIssuers(msg.sender) returns (uint256 _id) {
         _isValid(msg.sender, validationFunc);
         uint256 tokenId = _generateGOToken(msg.sender, amount, data);
@@ -85,10 +90,21 @@ contract GORegistry is ERC1155Burnable, Ownable {
             certificateType: _certificateType,
             issuingBody: msg.sender,
             data: data,
-            validationFunction: validationFunc
+            validationFunction: validationFunc,
+            hasPrivate: _hasPrivate,
+            rootHash: _rootHash,
+            privateData: "",
+            isRevealed: false
         });
         emit OneGOIssued(msg.sender, amount, _certificateType, data);
         return tokenId;
+    }
+
+    function revealPrivateData(uint256 certId, bytes memory revealedData) onlyCertificateIssuer(certId) public {
+        GOCertificate storage go = theGOStorage[certId];
+        require(go.hasPrivate && !go.isRevealed, "No private data or revealed");
+        go.isRevealed = true;
+        go.privateData = revealedData;
     }
 
     function _beforeTokenTransfer(
@@ -211,12 +227,9 @@ contract GORegistry is ERC1155Burnable, Ownable {
         emit IssuingBodyRemoved(issuer);
     }
 
-    //Can only be called by Issuing body address
     function registerForIssuingBody(address registrant) public onlyCertifiedIssuers(msg.sender){
         userToIssuingBody[registrant] = msg.sender;
     }
-
-    /////////////    Private  ////////////////
 
     function _generateGOToken(
         address certificateIssuer,

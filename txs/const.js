@@ -4,7 +4,7 @@ const GO_DATA = {
     productionPeriodStart: "2021-01-01",
     productionPeriodEnd: "2021-01-10",
     operatorName: "SolarPower",
-    dateRequested: new Date(),
+    dateRequested: new Date().toDateString(),
     productionDeviceLocation: "Hradec Kralove, CZ",
     technology: "T010011 / Solar",
     productionDevice: "Solar Panel Device 4",

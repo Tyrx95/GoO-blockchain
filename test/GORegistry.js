@@ -3,8 +3,25 @@ const GOIssuingBody = artifacts.require("GOIssuingBody.sol");
 
 
 const truffleAssert = require('truffle-assertions');
+const PreciseProofs = require('precise-proofs-js').PreciseProofs;
+const randomBytes = require('random-bytes');
 
 
+
+const GO_PRIVATE_DATA = {
+  issuer: "CZIB",
+  domain: "Czech Republic",
+  productionPeriodStart: "2021-01-01",
+  productionPeriodEnd: "2021-01-10",
+  operatorName: "SolarPower",
+  dateRequested: new Date().toDateString(),
+  productionDeviceLocation: "Hradec Kralove, CZ",
+  technology: "T010011 / Solar",
+  productionDevice: "Solar Panel Device 4",
+  productionDeviceGSRN: "440000044000444400444",
+  installedCapacity: "30Mw",
+  amount: "25Mwh"
+}
 const CERTIFICATE_TYPE_SOLAR = 1;
 
 contract("GORegistry and GOIssuingBody", (accounts) => {
@@ -231,5 +248,93 @@ contract("GORegistry and GOIssuingBody", (accounts) => {
       ),
       truffleAssert.ErrorType.REVERT
     );
+  });
+
+  it("...should issue certificate with private data if called by certified issuer", async () => {
+    // await theGORegistryInstance.registerForIssuingBody(accounts[0], {from: issuingBodyInstanceOne});
+    // await theGORegistryInstance.registerForIssuingBody(accounts[1], {from: issuingBodyInstanceTwo});
+    const leafs = PreciseProofs.createLeafs(GO_PRIVATE_DATA);
+    const merkleTree = PreciseProofs.createMerkleTree(leafs.map((leaf) => leaf.hash));
+    const rootHash = PreciseProofs.getRootHash(merkleTree)
+    const result =  await issuingBodyInstanceOne.issueGOPrivate(51, accounts[3], 
+        CERTIFICATE_TYPE_SOLAR, "0x2321521512", rootHash, {from: accounts[0]});
+    let tokenId = result.logs[1].args.goId;
+
+    const goCertificate = await theGORegistryInstance.theGOStorage.call(tokenId);
+    const goRootHash = goCertificate.rootHash;
+    const validProof = PreciseProofs.createProof('operatorName', leafs, false);
+    assert.isTrue(PreciseProofs.verifyProof(goRootHash, validProof), "Valid proof expected to be verified");
+    
+    const fakeData = {...GO_PRIVATE_DATA, operatorName: "Fake inc"};
+    const fakeLeafs = PreciseProofs.createLeafs(fakeData);
+    const invalidProof = PreciseProofs.createProof('operatorName', fakeLeafs, false);
+    assert.isFalse(PreciseProofs.verifyProof(goRootHash, invalidProof), "InValid proof expected to not be verified");
+  });
+
+  it("...should reveal private data and check each proof", async () => {
+    
+    const salts = [];
+    for (const [key, value] of Object.entries(GO_PRIVATE_DATA)) {
+      const salt = await randomBytes(16);
+      salts.push(salt.toString("base64"));
+    }
+    const leafs = PreciseProofs.createLeafs(GO_PRIVATE_DATA, salts);
+    const merkleTree = PreciseProofs.createMerkleTree(leafs.map((leaf) => leaf.hash));
+    const rootHash = PreciseProofs.getRootHash(merkleTree)
+    const result =  await issuingBodyInstanceOne.issueGOPrivate(51, accounts[3], 
+        CERTIFICATE_TYPE_SOLAR, "0x2321521512", rootHash, {from: accounts[0]});
+    let tokenId = result.logs[1].args.goId;
+    const revealingObject = {
+      revealedData: GO_PRIVATE_DATA,
+      revealedSalts: salts
+    }
+    const bytesData = web3.utils.fromAscii(JSON.stringify(revealingObject));
+    await issuingBodyInstanceOne.revealGOPrivateData(tokenId, bytesData, {from: accounts[0]});
+    const goCertificate = await theGORegistryInstance.theGOStorage.call(tokenId);
+
+    const {revealedData, revealedSalts} = JSON.parse(web3.utils.toAscii(goCertificate.privateData));
+    const goRootHash = goCertificate.rootHash;
+    const revealedLeafs = PreciseProofs.createLeafs(revealedData, revealedSalts);
+
+    for (const [key, value] of Object.entries(revealedData)) {
+      console.log(`Creating proof for field: ${key}, with value: ${value}`);
+      const proof = PreciseProofs.createProof(key, revealedLeafs, false);
+      assert.isTrue(PreciseProofs.verifyProof(goRootHash, proof), "Proof expected to be verified");
+      console.log(`Proof for field: ${key}, verified`);
+    }
+  });
+
+  it("...should reveal private data and not verify invalid proofs", async () => {
+    
+    const salts = [];
+    for (const [key, value] of Object.entries(GO_PRIVATE_DATA)) {
+      const salt = await randomBytes(16);
+      salts.push(salt.toString("base64"));
+    }
+    const leafs = PreciseProofs.createLeafs(GO_PRIVATE_DATA, salts);
+    const merkleTree = PreciseProofs.createMerkleTree(leafs.map((leaf) => leaf.hash));
+    const rootHash = PreciseProofs.getRootHash(merkleTree)
+    const result =  await issuingBodyInstanceOne.issueGOPrivate(51, accounts[3], 
+        CERTIFICATE_TYPE_SOLAR, "0x2321521512", rootHash, {from: accounts[0]});
+    let tokenId = result.logs[1].args.goId;
+    const revealingObject = {
+      revealedData: {...GO_PRIVATE_DATA, issuer: "Fake Inc"},
+      revealedSalts: salts
+    }
+    const bytesData = web3.utils.fromAscii(JSON.stringify(revealingObject));
+    await issuingBodyInstanceOne.revealGOPrivateData(tokenId, bytesData, {from: accounts[0]});
+    const goCertificate = await theGORegistryInstance.theGOStorage.call(tokenId);
+
+    const {revealedData, revealedSalts} = JSON.parse(web3.utils.toAscii(goCertificate.privateData));
+    const goRootHash = goCertificate.rootHash;
+    const revealedLeafs = PreciseProofs.createLeafs(revealedData, revealedSalts);
+
+    let verified = false;
+    for (const [key, value] of Object.entries(revealedData)) {
+      console.log(`Creating proof for field: ${key}, with value: ${value}`);
+      const proof = PreciseProofs.createProof(key, revealedLeafs, false);
+      verified = PreciseProofs.verifyProof(goRootHash, proof);
+    }
+    assert.isFalse(verified, "Proof expected to not be verified");
   });
  });

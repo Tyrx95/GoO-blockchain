@@ -19,10 +19,19 @@ contract GOIssuingBody is Ownable, ERC165, ERC1155Holder {
     mapping(address => bool) tradesWithIBAddrs;
 
     event GORequested(address indexed theGOOwner, uint256 indexed reqId);
+    event GOPrivateRequested(address indexed theGOOwner, uint256 indexed reqId, bytes32 rootHash);
+
     event GORequestConfirmed(
         uint256 indexed requestId,
         uint256 indexed goId,
         address indexed owner
+    );
+
+    event GOPrivateRequestConfirmed(
+        uint256 indexed requestId,
+        uint256 indexed goId,
+        address indexed owner,
+        bytes32 rootHash
     );
     event GORequestWithdrawn(uint256 indexed reqId, address indexed reqOwner);
     event IssuedGOWithdrawn(uint256 indexed tokenGOId);
@@ -34,6 +43,8 @@ contract GOIssuingBody is Ownable, ERC165, ERC1155Holder {
         address solicitor;
         bytes goData;
         int256 energyType;
+        bool isPrivate;
+        bytes32 rootHash;
     }
 
     constructor(address regAddress) Ownable() {
@@ -56,9 +67,32 @@ contract GOIssuingBody is Ownable, ERC165, ERC1155Holder {
             confirmed: false,
             solicitor: msg.sender,
             goData: theGOData,
-            energyType: _type
+            energyType: _type,
+            isPrivate: false,
+            rootHash: bytes32(0)
         });
         emit GORequested(theGOOwner, reqId);
+        return reqId;
+    }
+
+    function requestGOPrivate(
+        address theGOOwner,
+        bytes memory theGOData,
+        int256 _type,
+        bytes32 _rootHash
+    ) public returns (uint256 id) {
+        uint256 reqId = reqIdCounter++;
+        reqs[reqId] = GORequest({
+            owner: theGOOwner,
+            withdrawn: false,
+            confirmed: false,
+            solicitor: msg.sender,
+            goData: theGOData,
+            energyType: _type,
+            isPrivate: true,
+            rootHash: _rootHash
+        });
+        emit GOPrivateRequested(theGOOwner, reqId, _rootHash);
         return reqId;
     }
 
@@ -75,16 +109,46 @@ contract GOIssuingBody is Ownable, ERC165, ERC1155Holder {
         require(!req.confirmed, "The request has already been confirmed");
         req.confirmed = true;
         uint256 goId =
-            theGORegistry.issueGOCertificate(
+                theGORegistry.issueGOCertificate(
                 req.owner,
                 req.energyType,
                 amount,
                 req.goData,
-                validityFunc
+                validityFunc,
+                false,
+                bytes32(0)
             );
-        fromGOToReq[reqId] = goId;
-        emit GORequestConfirmed(reqId, goId, req.owner);
+            fromGOToReq[reqId] = goId;
+            emit GORequestConfirmed(reqId, goId, req.owner);
+        
         return goId;
+    }
+
+    function confirmGoPrivateRequest(
+        bytes memory validityFunc,
+        uint256 reqId,
+        uint256 amount
+    ) public onlyOwner returns (uint256){
+        require(
+            _notConfirmedOrWithdrawn(reqId),
+            "confirmGORequest(): Request has been previously confirmed or withdrawn"
+        );
+        GORequest storage req = reqs[reqId];
+        require(!req.confirmed, "The request has already been confirmed");
+        req.confirmed = true;
+        uint256 goId;
+        goId =
+                theGORegistry.issueGOCertificate(
+                    req.owner,
+                    req.energyType,
+                    amount,
+                    req.goData,
+                    validityFunc,
+                    true,
+                    req.rootHash
+                );
+            fromGOToReq[reqId] = goId;
+            emit GOPrivateRequestConfirmed(reqId, goId, req.owner, req.rootHash);
     }
 
     function issueGO(
@@ -100,6 +164,26 @@ contract GOIssuingBody is Ownable, ERC165, ERC1155Holder {
                 reqId,
                 amount
             );
+    }
+
+    function issueGOPrivate(
+        uint256 amount,
+        address receiver,
+        int256 energyType,
+        bytes memory goData,
+        bytes32 rootHash
+    ) public onlyOwner returns (uint256) {
+        uint256 reqId = requestGOPrivate(receiver, goData, energyType, rootHash);
+        return
+            confirmGoPrivateRequest(
+                abi.encodeWithSignature("validateGO(uint256)", reqId),
+                reqId,
+                amount
+            );
+    }
+
+    function revealGOPrivateData(uint256 goId, bytes memory privateData) external onlyOwner {
+        theGORegistry.revealPrivateData(goId, privateData);
     }
 
     function withdrawGORequest(uint256 reqId) external returns (bool) {
